@@ -1,10 +1,10 @@
 #ifndef VEC3_H
 #define VEC3_H
 
+#include "random.h"
+
 #include <cmath>
 #include <iostream>
-
-using std::sqrt;
 
 struct vec3 {
   public:
@@ -64,7 +64,7 @@ struct vec3 {
     }
     
     constexpr double length() const {
-        return sqrt(length_squared());
+        return std::sqrt(length_squared());
     }
 
     constexpr double length_squared() const {
@@ -94,19 +94,10 @@ struct vec3 {
         auto rpara = v * -std::sqrt(std::fabs(1.0 - rperp.length_squared()));
         return rperp + rpara;
     }
-
-    static vec3 random() {
-        return vec3(randomN(), randomN(), randomN());
-    }
-
-    //static vec3 random(double min, double max) {
-    //    return vec3(randomN(min,max), randomN(min,max), randomN(min,max));
-    //}
 };
 
 // point3 is just an alias for vec3, but useful for geometric clarity in the code.
 using point3 = vec3;
-
 
 // Vector Utility Functions
 
@@ -122,7 +113,6 @@ constexpr inline vec3 operator/(double t, const vec3& v) {
     return v * (1 / t);
 }
 
-
 inline constexpr vec3 cross(const vec3& u, const vec3& v) {
     return vec3(u.e[1] * v.e[2] - u.e[2] * v.e[1],
                 u.e[2] * v.e[0] - u.e[0] * v.e[2],
@@ -135,7 +125,7 @@ inline constexpr vec3 unit_vector(const vec3& v) {
 
 inline vec3 randomUnitSphere() {
     for (;;) {
-        if (auto p = vec3::random() * 2 - vec3(1, 1, 1); p.length_squared() < 1)
+        if (auto p = vec3(randomN(), randomN(), randomN()) * 2 - vec3(1, 1, 1); p.length_squared() < 1)
             return p;
     }
 }

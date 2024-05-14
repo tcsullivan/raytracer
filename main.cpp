@@ -1,16 +1,15 @@
-#include <random>
-
-inline double randomN()
-{
-    static std::uniform_real_distribution<double> distribution (0.0, 1.0);
-    static std::mt19937 generator;
-    return distribution(generator);
-}
+constexpr unsigned Width = 1000;
+constexpr double   Aspect = 16.0 / 9.0;
+constexpr unsigned Height = Width / Aspect;
+constexpr unsigned Threads = 8;
 
 #include "color.h"
 #include "ray.h"
 #include "renderer.h"
+#include "sphere.h"
 #include "vec3.h"
+#include "view.h"
+#include "world.h"
 
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
@@ -21,182 +20,10 @@ inline double randomN()
 #include <chrono>
 #include <cstring>
 #include <iostream>
-#include <memory>
-#include <optional>
 #include <ranges>
 #include <thread>
-#include <tuple>
-#include <vector>
-
-constexpr unsigned Width = 1000;
-constexpr double   Aspect = 16.0 / 9.0;
-constexpr unsigned Height = Width / Aspect;
-constexpr unsigned Threads = 8;
-
-enum class Material : int {
-    Lambertian,
-    Metal,
-    Dielectric
-};
-
-struct View
-{
-    static constexpr auto lookat = point3(0, 0, -1); // Point camera is looking at
-    static constexpr auto vup    = vec3(0, 1, 0);    // Camera-relative "up" direction
-
-    float fieldOfView = 90.f;
-    float focalLength;
-    float viewportHeight;
-    float viewportWidth;
-
-    point3 camera;
-    vec3 viewportX;
-    vec3 viewportY;
-    vec3 pixelDX;
-    vec3 pixelDY;
-    vec3 viewportUL;
-    vec3 pixelUL;
-
-    View() {
-        recalculate();
-    }
-
-    void recalculate() {
-        focalLength = (camera - lookat).length();
-        viewportHeight = 2 * std::tan(fieldOfView * 3.14159265 / 180.0 / 2.0) * focalLength;
-        viewportWidth  = viewportHeight * Aspect;
-
-        const auto w = (camera - lookat).normalize();
-        const auto u = cross(vup, w).normalize();
-        const auto v = cross(w, u);
-
-        viewportX = viewportWidth * u;
-        viewportY = -viewportHeight * v;
-
-        pixelDX = viewportX / Width;
-        pixelDY = viewportY / Height;
-        viewportUL = camera - focalLength * w - viewportX / 2 - viewportY / 2;
-        pixelUL = viewportUL + 0.5 * (pixelDX + pixelDY);
-    }
-
-    ray getRay(int x, int y, bool addRandom = false) const {
-        double X = x;
-        double Y = y;
-
-        if (addRandom) {
-            X += randomN() - 0.5;
-            Y += randomN() - 0.5;
-        }
-
-        auto pixel = pixelUL + X * pixelDX + Y * pixelDY;
-        return ray(camera, pixel - camera);
-    }
-};
-
-struct Sphere
-{
-    point3 center;
-    double radius;
-    Material M;
-    color tint;
-
-    std::pair<color, ray> scatter(const ray& r, double root) const {
-        const auto p = r.at(root);
-        auto normal = (p - center) / radius;
-
-        if (M == Material::Lambertian) {
-            return {tint, ray(p, normal + randomUnitSphere())};
-        } else if (M == Material::Metal) {
-            return {tint, ray(p, r.direction().reflect(normal))};
-        } else if (M == Material::Dielectric) {
-            constexpr auto index = 1.0 / 1.33;
-
-            const bool front = r.direction().dot(normal) < 0;
-            const auto ri = front ? 1.0 / index : index;
-            if (!front)
-                normal *= -1;
-
-            const auto dir = r.direction().normalize();
-            const double costh = std::fmin((-dir).dot(normal), 1);
-            const double sinth = std::sqrt(1 - costh * costh);
-
-            if (ri * sinth > 1)
-                return {color(1, 1, 1), ray(p, dir.reflect(normal))};
-            else
-                return {color(1, 1, 1), ray(p, dir.refract(normal, ri))};
-        } else {
-            return {};
-        }
-    }
-
-    std::optional<double> hit(const ray& r, double tmin, double tmax) const {
-        const vec3 oc = center - r.origin();
-        const auto a = r.direction().length_squared();
-        const auto h = r.direction().dot(oc);
-        const auto c = oc.length_squared() - radius * radius;
-        const auto discriminant = h * h - a * c;
-
-        if (discriminant < 0) {
-            return {}; // No hit
-        } else {
-            const auto sqrtd = sqrt(discriminant);
-
-            // Find the nearest root that lies in the acceptable range.
-            auto root = (h - sqrtd) / a;
-            if (root <= tmin || tmax <= root) {
-                root = (h + sqrtd) / a;
-                if (root <= tmin || tmax <= root)
-                    return {};
-            }
-
-            return root;
-        }
-    }
-};
-
-struct World
-{
-    std::vector<Sphere> objects;
-
-    void add(auto&&... args) {
-        objects.emplace_back(args...);
-    }
-
-    std::optional<std::pair<double, Sphere>> hit(const ray& r) const {
-        double closest = std::numeric_limits<double>::infinity();
-        Sphere sphere;
-
-        for (const auto& o : objects) {
-            if (auto t = o.hit(r, 0.001, closest); t) {
-                closest = *t;
-                sphere = o;
-            }
-        }
-
-        if (closest != std::numeric_limits<double>::infinity())
-            return std::pair {closest, sphere};
-        else
-            return {};
-    }
-};
 
 static World world;
-
-static color ray_color(const ray& r, int depth = 50)
-{
-    if (depth <= 0)
-        return {};
-
-    if (auto hit = world.hit(r); hit) {
-        const auto& [closest, sphere] = *hit;
-        const auto [atten, scat] = sphere.scatter(r, closest);
-        return atten * ray_color(scat, depth - 1);
-    } else {
-        const auto unitDir = r.direction().normalize();
-        const auto a = 0.5 * (unitDir.y() + 1.0);
-        return (1.0 - a) * color(1.0, 1.0, 1.0) + a * color(0.5, 0.7, 1.0);
-    }
-}
 
 static View Camera;
 static int SamplesPerPixel = 20;
@@ -204,22 +31,8 @@ static std::unique_ptr<Renderer<Threads>> renderer;
 static std::chrono::time_point<std::chrono::high_resolution_clock> renderStart;
 static std::chrono::duration<double> renderTime;
 
-void initiateRender(SDL_Surface *canvas)
-{
-    renderStart = std::chrono::high_resolution_clock::now();
-    renderTime = std::chrono::duration<double>::zero();
-
-    auto func = [format = canvas->format](auto x, auto y, auto pbuf) {
-        auto col = std::ranges::fold_left(std::views::iota(0, SamplesPerPixel), color(),
-            [y, x](color c, int i) { return c + ray_color(Camera.getRay(x, y, true)); });
-
-        col = col / SamplesPerPixel * 255;
-        pbuf[y * Width + x] = SDL_MapRGBA(format, col.x(), col.y(), col.z(), 255);
-    };
-
-    Camera.recalculate();
-    renderer.reset(new Renderer<Threads>(func, Width, Height, (uint32_t *)canvas->pixels));
-}
+static color ray_color(const ray& r, int depth = 50);
+static void initiateRender(SDL_Surface *canvas);
 
 int main()
 {
@@ -302,10 +115,10 @@ int main()
             }
         } ImGui::End();
 
-        ImGui::Render();
-        //SDL_RenderSetScale(painter, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
-        SDL_RenderClear(painter);
         auto tex = SDL_CreateTextureFromSurface(painter, canvas);
+
+        ImGui::Render();
+        SDL_RenderClear(painter);
         SDL_RenderCopy(painter, tex, nullptr, nullptr);
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData());
         SDL_RenderPresent(painter);
@@ -324,3 +137,35 @@ int main()
     SDL_Quit();
 }
 
+color ray_color(const ray& r, int depth)
+{
+    if (depth <= 0)
+        return {};
+
+    if (auto hit = world.hit(r); hit) {
+        const auto& [closest, sphere] = *hit;
+        const auto [atten, scat] = sphere.scatter(r, closest);
+        return atten * ray_color(scat, depth - 1);
+    } else {
+        const auto unitDir = r.direction().normalize();
+        const auto a = 0.5 * (unitDir.y() + 1.0);
+        return (1.0 - a) * color(1.0, 1.0, 1.0) + a * color(0.5, 0.7, 1.0);
+    }
+}
+
+void initiateRender(SDL_Surface *canvas)
+{
+    renderStart = std::chrono::high_resolution_clock::now();
+    renderTime = std::chrono::duration<double>::zero();
+
+    auto func = [format = canvas->format](auto x, auto y, auto pbuf) {
+        auto col = std::ranges::fold_left(std::views::iota(0, SamplesPerPixel), color(),
+            [y, x](color c, int i) { return c + ray_color(Camera.getRay(x, y, true)); });
+
+        col = col / SamplesPerPixel * 255;
+        pbuf[y * Width + x] = SDL_MapRGBA(format, col.x(), col.y(), col.z(), 255);
+    };
+
+    Camera.recalculate();
+    renderer.reset(new Renderer<Threads>(func, Width, Height, (uint32_t *)canvas->pixels));
+}
