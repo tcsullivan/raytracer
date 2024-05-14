@@ -1,7 +1,7 @@
 constexpr unsigned Width = 1000;
 constexpr double   Aspect = 16.0 / 9.0;
 constexpr unsigned Height = Width / Aspect;
-constexpr unsigned Threads = 8;
+constexpr unsigned Threads = 3;
 
 #include "color.h"
 #include "ray.h"
@@ -15,6 +15,7 @@ constexpr unsigned Threads = 8;
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_sdlrenderer2.h"
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_image.h>
 
 #include <algorithm>
 #include <chrono>
@@ -23,10 +24,10 @@ constexpr unsigned Threads = 8;
 #include <ranges>
 #include <thread>
 
-static World world;
-
 static View Camera;
+static World world;
 static int SamplesPerPixel = 20;
+static float Daylight = 0.5f;
 static std::unique_ptr<Renderer<Threads>> renderer;
 static std::chrono::time_point<std::chrono::high_resolution_clock> renderStart;
 static std::chrono::duration<double> renderTime;
@@ -37,6 +38,7 @@ static void initiateRender(SDL_Surface *canvas);
 int main()
 {
     SDL_Init(SDL_INIT_VIDEO);
+    IMG_Init(IMG_INIT_PNG);
     auto window = SDL_CreateWindow("raytrace", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, Width, Height, SDL_WINDOW_RESIZABLE);
     auto canvas = SDL_CreateRGBSurfaceWithFormat(0, Width, Height, 32, SDL_PIXELFORMAT_RGBA8888);
     auto painter = SDL_CreateRenderer(window, -1, SDL_RENDERER_PRESENTVSYNC /*| SDL_RENDERER_ACCELERATED*/);
@@ -52,6 +54,7 @@ int main()
 
     std::cout << "Spawning threads..." << std::endl;
     initiateRender(canvas);
+    auto tex = SDL_CreateTextureFromSurface(painter, canvas);
 
     std::cout << "Entering render..." << std::endl;
     bool run = true;
@@ -74,8 +77,17 @@ int main()
         ImGui::SameLine(); ImGui::SetNextItemWidth(100); ImGui::InputDouble("Y", &Camera.camera.y(), 0.1, 0.05, "%.2lf");
         ImGui::SameLine(); ImGui::SetNextItemWidth(100); ImGui::InputDouble("Z", &Camera.camera.z(), 0.1, 0.05, "%.2lf");
         ImGui::SliderInt("samples", &SamplesPerPixel, 1, 200);
+        ImGui::SliderFloat("shade", &Daylight, 0.f, 1.f);
         if (ImGui::Button("recalculate")) {
             initiateRender(canvas);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("export")) {
+            std::string filename ("screenshot_");
+            filename += std::to_string(int(randomN() * 1000000));
+            filename += ".png";
+            IMG_SavePNG(canvas, filename.c_str());
+            std::cout << "saved " << filename << std::endl;
         }
         ImGui::SameLine();
         if (ImGui::Button("exit")) {
@@ -83,46 +95,67 @@ int main()
             run = false;
         }
         if (*renderer) {
+            SDL_DestroyTexture(tex);
+            tex = SDL_CreateTextureFromSurface(painter, canvas);
+
             ImGui::SameLine();
             if (ImGui::Button("stop")) {
                 renderer->stop();
             }
             ImGui::Text("wait... %u%%", renderer->progress());
         } else if (renderTime == std::chrono::duration<double>::zero()) {
+            SDL_DestroyTexture(tex);
+            tex = SDL_CreateTextureFromSurface(painter, canvas);
+
             renderTime = std::chrono::high_resolution_clock::now() - renderStart;
         } else {
             ImGui::Text("%0.6lfs", renderTime.count());
         }
         ImGui::End();
 
-        ImGui::Begin("balls", nullptr, ImGuiWindowFlags_AlwaysAutoResize); {
+        ImGui::Begin("balls", nullptr, ImGuiWindowFlags_NoResize); {
             char radius[] = "radius 0";
             char mat[] = "mat 0";
             char xpos[] = "x 0";
             char ypos[] = "y 0";
             char zpos[] = "z 0";
+
             for (auto& o : std::views::drop(world.objects, 1)) {
-                ImGui::Combo(mat, reinterpret_cast<int *>(&o.M), "Lambertian\0Metal\0Dielectric\0");
-                ImGui::SameLine(); ImGui::SetNextItemWidth(100); ImGui::InputDouble(radius, &o.radius, 0.1, 0.05, "%.2lf");
-                ImGui::SetNextItemWidth(100); ImGui::InputDouble(xpos, &o.center.x(), 0.05, 0.05, "%.2lf");
-                ImGui::SameLine(); ImGui::SetNextItemWidth(100); ImGui::InputDouble(ypos, &o.center.y(), 0.1, 0.05, "%.2lf");
-                ImGui::SameLine(); ImGui::SetNextItemWidth(100); ImGui::InputDouble(zpos, &o.center.z(), 0.1, 0.05, "%.2lf");
+                ImGui::SetNextItemWidth(200);
+                ImGui::Combo(mat, reinterpret_cast<int *>(&o.M),
+                    "Lambertian\0Metal\0Dielectric\0");
+                ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+                ImGui::InputDouble(radius, &o.radius, 0.1, 0.05, "%.2lf");
+                ImGui::SetNextItemWidth(100);
+                ImGui::InputDouble(xpos, &o.center.x(), 0.05, 0.05, "%.2lf");
+                ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+                ImGui::InputDouble(ypos, &o.center.y(), 0.1, 0.05, "%.2lf");
+                ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+                ImGui::InputDouble(zpos, &o.center.z(), 0.1, 0.05, "%.2lf");
+
                 radius[7]++;
                 mat[4]++;
                 xpos[2]++;
                 ypos[2]++;
                 zpos[2]++;
             }
+            if (ImGui::Button("add")) {
+                const point3 pos = vec3::random() * vec3(4, 1.5, 4) - vec3(2, 0, 4);
+                const color col = vec3::random();
+                world.add(pos, randomN() * 0.5 + 0.1, Material::Lambertian, col);
+                initiateRender(canvas);
+            }
+            if (ImGui::Button("del")) {
+                world.objects.pop_back();
+                initiateRender(canvas);
+            }
         } ImGui::End();
-
-        auto tex = SDL_CreateTextureFromSurface(painter, canvas);
 
         ImGui::Render();
         SDL_RenderClear(painter);
         SDL_RenderCopy(painter, tex, nullptr, nullptr);
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData());
         SDL_RenderPresent(painter);
-        SDL_DestroyTexture(tex);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(30));
     }
@@ -148,7 +181,7 @@ color ray_color(const ray& r, int depth)
         return atten * ray_color(scat, depth - 1);
     } else {
         const auto unitDir = r.direction().normalize();
-        const auto a = 0.5 * (unitDir.y() + 1.0);
+        const auto a = Daylight * (unitDir.y() + 1.0);
         return (1.0 - a) * color(1.0, 1.0, 1.0) + a * color(0.5, 0.7, 1.0);
     }
 }

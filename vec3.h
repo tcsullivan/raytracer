@@ -94,6 +94,10 @@ struct vec3 {
         auto rpara = v * -std::sqrt(std::fabs(1.0 - rperp.length_squared()));
         return rperp + rpara;
     }
+
+    static vec3 random() {
+        return vec3(randomN(), randomN(), randomN());
+    }
 };
 
 // point3 is just an alias for vec3, but useful for geometric clarity in the code.
@@ -125,7 +129,7 @@ inline constexpr vec3 unit_vector(const vec3& v) {
 
 inline vec3 randomUnitSphere() {
     for (;;) {
-        if (auto p = vec3(randomN(), randomN(), randomN()) * 2 - vec3(1, 1, 1); p.length_squared() < 1)
+        if (auto p = vec3::random() * 2 - vec3(1, 1, 1); p.length_squared() < 1)
             return p;
     }
 }

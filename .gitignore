@@ -1,4 +1,5 @@
 *.o
+*.png
 *.sw*
 main
 imgui.ini

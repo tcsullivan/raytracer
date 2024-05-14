@@ -12,11 +12,11 @@ struct View
     static constexpr auto vup    = vec3(0, 1, 0);    // Camera-relative "up" direction
 
     float fieldOfView = 90.f;
+    point3 camera {0, 0.5, 0.5};
+
     float focalLength;
     float viewportHeight;
     float viewportWidth;
-
-    point3 camera;
     vec3 viewportX;
     vec3 viewportY;
     vec3 pixelDX;
