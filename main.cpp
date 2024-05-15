@@ -1,7 +1,6 @@
 constexpr unsigned Width = 1000;
 constexpr double   Aspect = 16.0 / 9.0;
 constexpr unsigned Height = Width / Aspect;
-constexpr unsigned Threads = 3;
 
 #include "color.h"
 #include "ray.h"
@@ -26,14 +25,17 @@ constexpr unsigned Threads = 3;
 
 static View Camera;
 static World world;
+static int threads = 4;
 static int SamplesPerPixel = 20;
 static float Daylight = 0.5f;
-static std::unique_ptr<Renderer<Threads>> renderer;
+static std::unique_ptr<Renderer> renderer;
 static std::chrono::time_point<std::chrono::high_resolution_clock> renderStart;
 static std::chrono::duration<double> renderTime;
 
 static color ray_color(const ray& r, int depth = 50);
 static void initiateRender(SDL_Surface *canvas);
+static void showObjectControls(int index, Sphere& o);
+static void addRandomObject();
 
 int main()
 {
@@ -47,10 +49,10 @@ int main()
     ImGui_ImplSDL2_InitForSDLRenderer(window, painter);
     ImGui_ImplSDLRenderer2_Init(painter);
 
-    world.add(point3( 0.00, -100.50, -1.0), 100.0, Material::Lambertian, color(0.5, 1.0, 0.5));
-    world.add(point3(-0.50,    0.00, -1.2),   0.5, Material::Dielectric, color(1.0, 0.8, 0.8));
-    world.add(point3( 0.50,    0.00, -1.0),   0.5, Material::Metal,      color(0.5, 0.5, 0.5));
-    world.add(point3(-0.05,   -0.35, -0.7),   0.1, Material::Metal,      color(0.8, 0.6, 0.0));
+    world.add(point3(0.00, -100.50, -1.0), 100.0,
+        Material::Lambertian, color(0.5, 1.0, 0.5));
+    for (auto i : std::views::iota(0, 10))
+        addRandomObject();
 
     std::cout << "Spawning threads..." << std::endl;
     initiateRender(canvas);
@@ -73,11 +75,17 @@ int main()
 
         ImGui::Begin("settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
         ImGui::SliderFloat("fov", &Camera.fieldOfView, 10, 160);
-        ImGui::SetNextItemWidth(100); ImGui::InputDouble("X", &Camera.camera.x(), 0.1, 0.05, "%.2lf");
-        ImGui::SameLine(); ImGui::SetNextItemWidth(100); ImGui::InputDouble("Y", &Camera.camera.y(), 0.1, 0.05, "%.2lf");
-        ImGui::SameLine(); ImGui::SetNextItemWidth(100); ImGui::InputDouble("Z", &Camera.camera.z(), 0.1, 0.05, "%.2lf");
+        ImGui::SameLine(); ImGui::SetNextItemWidth(60);
+        ImGui::InputInt("T", &threads);
+        ImGui::SetNextItemWidth(100);
+        ImGui::InputDouble("X", &Camera.camera.x(), 0.1, 0.05, "%.2lf");
+        ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+        ImGui::InputDouble("Y", &Camera.camera.y(), 0.1, 0.05, "%.2lf");
+        ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+        ImGui::InputDouble("Z", &Camera.camera.z(), 0.1, 0.05, "%.2lf");
         ImGui::SliderInt("samples", &SamplesPerPixel, 1, 200);
         ImGui::SliderFloat("shade", &Daylight, 0.f, 1.f);
+
         if (ImGui::Button("recalculate")) {
             initiateRender(canvas);
         }
@@ -94,6 +102,7 @@ int main()
             renderer->stop();
             run = false;
         }
+
         if (*renderer) {
             SDL_DestroyTexture(tex);
             tex = SDL_CreateTextureFromSurface(painter, canvas);
@@ -114,35 +123,13 @@ int main()
         ImGui::End();
 
         ImGui::Begin("balls", nullptr, ImGuiWindowFlags_NoResize); {
-            char radius[] = "radius 0";
-            char mat[] = "mat 0";
-            char xpos[] = "x 0";
-            char ypos[] = "y 0";
-            char zpos[] = "z 0";
+            std::ranges::for_each(
+                std::views::zip(std::views::iota(0),
+                                std::views::drop(world.objects, 1)),
+                [](auto io) { std::apply(showObjectControls, io); });
 
-            for (auto& o : std::views::drop(world.objects, 1)) {
-                ImGui::SetNextItemWidth(200);
-                ImGui::Combo(mat, reinterpret_cast<int *>(&o.M),
-                    "Lambertian\0Metal\0Dielectric\0");
-                ImGui::SameLine(); ImGui::SetNextItemWidth(100);
-                ImGui::InputDouble(radius, &o.radius, 0.1, 0.05, "%.2lf");
-                ImGui::SetNextItemWidth(100);
-                ImGui::InputDouble(xpos, &o.center.x(), 0.05, 0.05, "%.2lf");
-                ImGui::SameLine(); ImGui::SetNextItemWidth(100);
-                ImGui::InputDouble(ypos, &o.center.y(), 0.1, 0.05, "%.2lf");
-                ImGui::SameLine(); ImGui::SetNextItemWidth(100);
-                ImGui::InputDouble(zpos, &o.center.z(), 0.1, 0.05, "%.2lf");
-
-                radius[7]++;
-                mat[4]++;
-                xpos[2]++;
-                ypos[2]++;
-                zpos[2]++;
-            }
             if (ImGui::Button("add")) {
-                const point3 pos = vec3::random() * vec3(4, 1.5, 4) - vec3(2, 0, 4);
-                const color col = vec3::random();
-                world.add(pos, randomN() * 0.5 + 0.1, Material::Lambertian, col);
+                addRandomObject();
                 initiateRender(canvas);
             }
             if (ImGui::Button("del")) {
@@ -200,5 +187,37 @@ void initiateRender(SDL_Surface *canvas)
     };
 
     Camera.recalculate();
-    renderer.reset(new Renderer<Threads>(func, Width, Height, (uint32_t *)canvas->pixels));
+    threads = std::clamp(threads, 1, Renderer::MaxThreads);
+    renderer.reset(new Renderer(threads, func, Width, Height,
+        (uint32_t *)canvas->pixels));
 }
+
+void showObjectControls(int index, Sphere& o)
+{
+    const auto idx = std::to_string(index);
+
+    ImGui::SetNextItemWidth(200);
+    ImGui::Combo((std::string("mat") + idx).c_str(), reinterpret_cast<int *>(&o.M),
+        "Lambertian\0Metal\0Dielectric\0");
+    ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+    ImGui::InputDouble((std::string("radius") + idx).c_str(),
+        &o.radius, 0.1, 0.05, "%.2lf");
+    ImGui::SetNextItemWidth(100);
+    ImGui::InputDouble((std::string("x") + idx).c_str(),
+        &o.center.x(), 0.05, 0.05, "%.2lf");
+    ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+    ImGui::InputDouble((std::string("y") + idx).c_str(),
+        &o.center.y(), 0.1, 0.05, "%.2lf");
+    ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+    ImGui::InputDouble((std::string("z") + idx).c_str(),
+        &o.center.z(), 0.1, 0.05, "%.2lf");
+}
+
+void addRandomObject()
+{
+    const point3 pos = vec3::random() * vec3(6, 0.8, 3) - vec3(3, 0, 3.8);
+    const color col = vec3::random();
+    const auto mat = (int)(randomN() * ((int)Material::Undefined - 1));
+    world.add(pos, randomN() * 0.3 + 0.05, (Material)mat, col);
+}
+

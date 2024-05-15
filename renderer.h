@@ -1,3 +1,6 @@
+#ifndef RENDERER_H
+#define RENDERER_H
+
 #include <algorithm>
 #include <atomic>
 #include <memory>
@@ -5,28 +8,32 @@
 #include <semaphore>
 #include <thread>
 
-template<int Threads>
 class Renderer
 {
-    std::counting_semaphore<Threads> Workers;
+public:
+    static constexpr int MaxThreads = 64;
+
+private:
+    int N;
+    std::counting_semaphore<MaxThreads> Workers;
     std::atomic_uint processed;
     unsigned total;
     std::atomic_bool Stop;
     std::unique_ptr<std::thread> primary;
 
 public:
-    Renderer(auto func, unsigned Width, unsigned Height, auto pbuf):
-        Workers(Threads), processed(0), total(Threads * 8)
+    Renderer(int n, auto func, unsigned width, unsigned height, auto pbuf):
+        N(n), Workers(N), processed(0), total(N * 8)
     {
         Stop.store(false);
 
         auto threads = std::views::transform(
             std::views::chunk(
                 std::views::cartesian_product(
-                    std::views::iota(0u, Width),
-                    std::views::iota(0u, Height),
+                    std::views::iota(0u, width),
+                    std::views::iota(0u, height),
                     std::views::single(pbuf)),
-                Width * Height / total),
+                width * height / total),
             [=, this](auto chunk) { return std::thread([=, this] { worker(func, chunk); }); });
 
         primary.reset(new std::thread([=, this] {
@@ -34,10 +41,8 @@ public:
                 Workers.acquire();
                 th.detach();
             }
-            for (auto i : std::views::iota(0, Threads))
+            for (int i : std::views::iota(0, N))
                 Workers.acquire();
-            for (auto i : std::views::iota(0, Threads))
-                Workers.release();
             Stop.store(true);
         }));
     }
@@ -73,4 +78,5 @@ private:
     }
 };
 
+#endif // RENDERER_H
 

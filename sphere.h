@@ -10,9 +10,10 @@
 #include <tuple>
 
 enum class Material : int {
-    Lambertian,
+    Lambertian = 0,
     Metal,
-    Dielectric
+    Dielectric,
+    Undefined
 };
 
 struct Sphere
