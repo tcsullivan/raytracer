@@ -3,9 +3,9 @@ constexpr double   Aspect = 16.0 / 9.0;
 constexpr unsigned Height = Width / Aspect;
 
 #include "color.h"
+#include "object.h"
 #include "ray.h"
 #include "renderer.h"
-#include "sphere.h"
 #include "vec3.h"
 #include "view.h"
 #include "world.h"
@@ -36,7 +36,7 @@ static std::chrono::duration<double> renderTime;
 
 static color ray_color(const ray& r, int depth = 50);
 static void initiateRender(SDL_Surface *canvas);
-static void showObjectControls(int index, Sphere& o);
+static void showObjectControls(int index, std::unique_ptr<Object>& o);
 static void addRandomObject();
 static void preview(SDL_Surface *canvas);
 
@@ -52,7 +52,7 @@ int main()
     ImGui_ImplSDL2_InitForSDLRenderer(window, painter);
     ImGui_ImplSDLRenderer2_Init(painter);
 
-    world.add(point3(0.00, -100.50, -1.0), 100.0,
+    world.add<Sphere>(point3(0.00, -100.50, -1.0), 100.0,
         Material::Lambertian, color(0.5, 1.0, 0.5));
     for (auto i : std::views::iota(0, 10))
         addRandomObject();
@@ -173,8 +173,8 @@ color ray_color(const ray& r, int depth)
         return {};
 
     if (auto hit = world.hit(r); hit) {
-        const auto& [closest, sphere] = *hit;
-        const auto [atten, scat] = sphere.scatter(r, closest);
+        const auto& [closest, object] = *hit;
+        const auto [atten, scat] = object->scatter(r, closest);
         return atten * ray_color(scat, depth - 1);
     } else {
         const auto unitDir = r.direction().normalize();
@@ -202,25 +202,25 @@ void initiateRender(SDL_Surface *canvas)
         (uint32_t *)canvas->pixels));
 }
 
-void showObjectControls(int index, Sphere& o)
+void showObjectControls(int index, std::unique_ptr<Object>& o)
 {
     const auto idx = std::to_string(index);
 
     ImGui::SetNextItemWidth(200);
-    ImGui::Combo((std::string("mat") + idx).c_str(), reinterpret_cast<int *>(&o.M),
-        "Lambertian\0Metal\0Dielectric\0");
-    ImGui::SameLine(); ImGui::SetNextItemWidth(100);
-    ImGui::InputDouble((std::string("radius") + idx).c_str(),
-        &o.radius, 0.1, 0.05, "%.2lf");
+    ImGui::Combo((std::string("mat") + idx).c_str(),
+        reinterpret_cast<int *>(&o->M), "Lambertian\0Metal\0Dielectric\0");
+    //ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+    //ImGui::InputDouble((std::string("radius") + idx).c_str(),
+    //    &o->radius, 0.1, 0.05, "%.2lf");
     ImGui::SetNextItemWidth(100);
     ImGui::InputDouble((std::string("x") + idx).c_str(),
-        &o.center.x(), 0.05, 0.05, "%.2lf");
+        &o->center.x(), 0.05, 0.05, "%.2lf");
     ImGui::SameLine(); ImGui::SetNextItemWidth(100);
     ImGui::InputDouble((std::string("y") + idx).c_str(),
-        &o.center.y(), 0.1, 0.05, "%.2lf");
+        &o->center.y(), 0.1, 0.05, "%.2lf");
     ImGui::SameLine(); ImGui::SetNextItemWidth(100);
     ImGui::InputDouble((std::string("z") + idx).c_str(),
-        &o.center.z(), 0.1, 0.05, "%.2lf");
+        &o->center.z(), 0.1, 0.05, "%.2lf");
 }
 
 void addRandomObject()
@@ -228,7 +228,7 @@ void addRandomObject()
     const point3 pos = vec3::random() * vec3(6, 0.8, 3) - vec3(3, 0, 3.8);
     const color col = vec3::random();
     const auto mat = (int)(randomN() * (int)Material::Undefined);
-    world.add(pos, randomN() * 0.3 + 0.05, (Material)mat, col);
+    world.add<Sphere>(pos, randomN() * 0.3 + 0.05, (Material)mat, col);
 }
 
 void preview(SDL_Surface *canvas)

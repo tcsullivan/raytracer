@@ -2,6 +2,7 @@
 #define SPHERE_H
 
 #include "color.h"
+#include "object.h"
 #include "ray.h"
 #include "vec3.h"
 
@@ -9,21 +10,14 @@
 #include <optional>
 #include <tuple>
 
-enum class Material : int {
-    Lambertian = 0,
-    Metal,
-    Dielectric,
-    Undefined
-};
-
-struct Sphere
+struct Sphere : public Object
 {
-    point3 center;
     double radius;
-    Material M;
-    color tint;
 
-    std::pair<color, ray> scatter(const ray& r, double root) const {
+    Sphere(point3 center_, double radius_, Material M_, color tint_):
+        Object(center_, M_, tint_), radius(radius_) {}
+
+    std::pair<color, ray> scatter(const ray& r, double root) const override {
         const auto p = r.at(root);
         auto normal = (p - center) / radius;
 
@@ -52,7 +46,7 @@ struct Sphere
         }
     }
 
-    std::optional<double> hit(const ray& r, double tmin, double tmax) const {
+    std::optional<double> hit(const ray& r, double tmin, double tmax) const override {
         const vec3 oc = center - r.origin();
         const auto a = r.direction().length_squared();
         const auto h = r.direction().dot(oc);

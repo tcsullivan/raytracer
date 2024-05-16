@@ -4,26 +4,28 @@
 #include "sphere.h"
 
 #include <limits>
+#include <memory>
 #include <optional>
 #include <tuple>
 #include <vector>
 
 struct World
 {
-    std::vector<Sphere> objects;
+    std::vector<std::unique_ptr<Object>> objects;
 
+    template<class T>
     void add(auto&&... args) {
-        objects.emplace_back(args...);
+        objects.emplace_back(new T(args...));
     }
 
-    std::optional<std::pair<double, Sphere>> hit(const ray& r) const {
+    std::optional<std::pair<double, Object *>> hit(const ray& r) const {
         double closest = std::numeric_limits<double>::infinity();
-        Sphere sphere;
+        Object *sphere;
 
         for (const auto& o : objects) {
-            if (auto t = o.hit(r, 0.001, closest); t) {
+            if (auto t = o->hit(r, 0.001, closest); t) {
                 closest = *t;
-                sphere = o;
+                sphere = o.get();
             }
         }
 
