@@ -22,11 +22,13 @@ constexpr unsigned Height = Width / Aspect;
 #include <iostream>
 #include <ranges>
 #include <thread>
+#include <utility>
 
 static View Camera;
 static World world;
 static int threads = 4;
 static int SamplesPerPixel = 20;
+static int SamplesPerPixelTmp = 20;
 static float Daylight = 0.5f;
 static std::unique_ptr<Renderer> renderer;
 static std::chrono::time_point<std::chrono::high_resolution_clock> renderStart;
@@ -36,6 +38,7 @@ static color ray_color(const ray& r, int depth = 50);
 static void initiateRender(SDL_Surface *canvas);
 static void showObjectControls(int index, Sphere& o);
 static void addRandomObject();
+static void preview(SDL_Surface *canvas);
 
 int main()
 {
@@ -74,17 +77,23 @@ int main()
         ImGui::NewFrame();
 
         ImGui::Begin("settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-        ImGui::SliderFloat("fov", &Camera.fieldOfView, 10, 160);
-        ImGui::SameLine(); ImGui::SetNextItemWidth(60);
+        if (ImGui::SliderFloat("fov", &Camera.fieldOfView, 10, 160))
+            preview(canvas);
+        ImGui::SameLine(); ImGui::SetNextItemWidth(80);
         ImGui::InputInt("T", &threads);
         ImGui::SetNextItemWidth(100);
-        ImGui::InputDouble("X", &Camera.camera.x(), 0.1, 0.05, "%.2lf");
+        if (ImGui::InputDouble("X", &Camera.camera.x(), 0.1, 0.05, "%.2lf"))
+            preview(canvas);
         ImGui::SameLine(); ImGui::SetNextItemWidth(100);
-        ImGui::InputDouble("Y", &Camera.camera.y(), 0.1, 0.05, "%.2lf");
+        if (ImGui::InputDouble("Y", &Camera.camera.y(), 0.1, 0.05, "%.2lf"))
+            preview(canvas);
         ImGui::SameLine(); ImGui::SetNextItemWidth(100);
-        ImGui::InputDouble("Z", &Camera.camera.z(), 0.1, 0.05, "%.2lf");
-        ImGui::SliderInt("samples", &SamplesPerPixel, 1, 200);
-        ImGui::SliderFloat("shade", &Daylight, 0.f, 1.f);
+        if (ImGui::InputDouble("Z", &Camera.camera.z(), 0.1, 0.05, "%.2lf"))
+            preview(canvas);
+        if (ImGui::SliderInt("samples", &SamplesPerPixel, 1, 200)) {
+            SamplesPerPixelTmp = SamplesPerPixel;
+        }
+        ImGui::SliderFloat("shade", &Daylight, 0.25f, 1.f);
 
         if (ImGui::Button("recalculate")) {
             initiateRender(canvas);
@@ -117,6 +126,7 @@ int main()
             tex = SDL_CreateTextureFromSurface(painter, canvas);
 
             renderTime = std::chrono::high_resolution_clock::now() - renderStart;
+            SamplesPerPixel = SamplesPerPixelTmp;
         } else {
             ImGui::Text("%0.6lfs", renderTime.count());
         }
@@ -217,7 +227,14 @@ void addRandomObject()
 {
     const point3 pos = vec3::random() * vec3(6, 0.8, 3) - vec3(3, 0, 3.8);
     const color col = vec3::random();
-    const auto mat = (int)(randomN() * ((int)Material::Undefined - 1));
+    const auto mat = (int)(randomN() * (int)Material::Undefined);
     world.add(pos, randomN() * 0.3 + 0.05, (Material)mat, col);
+}
+
+void preview(SDL_Surface *canvas)
+{
+    if (SamplesPerPixel != 1)
+        SamplesPerPixelTmp = std::exchange(SamplesPerPixel, 1);
+    initiateRender(canvas);
 }
 
