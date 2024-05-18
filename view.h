@@ -8,11 +8,11 @@
 
 struct View
 {
-    static constexpr auto lookat = point3(0, 0, -1); // Point camera is looking at
     static constexpr auto vup    = vec3(0, 1, 0);    // Camera-relative "up" direction
 
     float fieldOfView = 90.f;
     point3 camera {0, 0.5, 0.5};
+    point3 lookat {0, 0, -1}; // Point camera is looking at
 
     float focalLength;
     float viewportHeight;

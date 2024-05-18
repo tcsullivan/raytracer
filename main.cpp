@@ -30,15 +30,17 @@ static int threads = 4;
 static int SamplesPerPixel = 20;
 static int SamplesPerPixelTmp = 20;
 static float Daylight = 0.5f;
-static std::unique_ptr<Renderer> renderer;
+static Renderer renderer;
 static std::chrono::time_point<std::chrono::high_resolution_clock> renderStart;
 static std::chrono::duration<double> renderTime;
 
 static color ray_color(const ray& r, int depth = 50);
 static void initiateRender(SDL_Surface *canvas);
 static void showObjectControls(int index, std::unique_ptr<Object>& o);
+static void showCameraControls(SDL_Surface *canvas);
 static void addRandomObject();
 static void preview(SDL_Surface *canvas);
+static void exportScreenshot(SDL_Surface *canvas);
 
 int main()
 {
@@ -47,6 +49,8 @@ int main()
     auto window = SDL_CreateWindow("raytrace", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, Width, Height, SDL_WINDOW_RESIZABLE);
     auto canvas = SDL_CreateRGBSurfaceWithFormat(0, Width, Height, 32, SDL_PIXELFORMAT_RGBA8888);
     auto painter = SDL_CreateRenderer(window, -1, SDL_RENDERER_PRESENTVSYNC /*| SDL_RENDERER_ACCELERATED*/);
+    auto tex = SDL_CreateTextureFromSurface(painter, canvas);
+    bool run = true;
 
     ImGui::CreateContext();
     ImGui_ImplSDL2_InitForSDLRenderer(window, painter);
@@ -57,17 +61,12 @@ int main()
     for (auto i : std::views::iota(0, 10))
         addRandomObject();
 
-    std::cout << "Spawning threads..." << std::endl;
     initiateRender(canvas);
-    auto tex = SDL_CreateTextureFromSurface(painter, canvas);
-
-    std::cout << "Entering render..." << std::endl;
-    bool run = true;
     for (SDL_Event event; run;) {
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL2_ProcessEvent(&event);
             if (event.type == SDL_QUIT) {
-                renderer->stop();
+                renderer.stop();
                 run = false;
             }
         }
@@ -80,51 +79,36 @@ int main()
         if (ImGui::SliderFloat("fov", &Camera.fieldOfView, 10, 160))
             preview(canvas);
         ImGui::SameLine(); ImGui::SetNextItemWidth(80);
-        ImGui::InputInt("T", &threads);
-        ImGui::SetNextItemWidth(100);
-        if (ImGui::InputDouble("X", &Camera.camera.x(), 0.1, 0.05, "%.2lf"))
-            preview(canvas);
-        ImGui::SameLine(); ImGui::SetNextItemWidth(100);
-        if (ImGui::InputDouble("Y", &Camera.camera.y(), 0.1, 0.05, "%.2lf"))
-            preview(canvas);
-        ImGui::SameLine(); ImGui::SetNextItemWidth(100);
-        if (ImGui::InputDouble("Z", &Camera.camera.z(), 0.1, 0.05, "%.2lf"))
-            preview(canvas);
+        if (ImGui::InputInt("T", &threads))
+            threads = std::max(threads, 1);
+        showCameraControls(canvas);
         if (ImGui::SliderInt("samples", &SamplesPerPixel, 1, 200)) {
             SamplesPerPixelTmp = SamplesPerPixel;
         }
         ImGui::SliderFloat("shade", &Daylight, 0.25f, 1.f);
 
-        if (ImGui::Button("recalculate")) {
+        if (ImGui::Button("recalculate"))
             initiateRender(canvas);
-        }
         ImGui::SameLine();
-        if (ImGui::Button("export")) {
-            std::string filename ("screenshot_");
-            filename += std::to_string(int(randomN() * 1000000));
-            filename += ".png";
-            IMG_SavePNG(canvas, filename.c_str());
-            std::cout << "saved " << filename << std::endl;
-        }
+        if (ImGui::Button("export"))
+            exportScreenshot(canvas);
         ImGui::SameLine();
         if (ImGui::Button("exit")) {
-            renderer->stop();
+            renderer.stop();
             run = false;
         }
 
-        if (*renderer) {
+        if (renderer) {
             SDL_DestroyTexture(tex);
             tex = SDL_CreateTextureFromSurface(painter, canvas);
 
             ImGui::SameLine();
-            if (ImGui::Button("stop")) {
-                renderer->stop();
-            }
-            ImGui::Text("wait... %u%%", renderer->progress());
+            if (ImGui::Button("stop"))
+                renderer.stop();
+            ImGui::Text("wait... %u%%", renderer.progress());
         } else if (renderTime == std::chrono::duration<double>::zero()) {
             SDL_DestroyTexture(tex);
             tex = SDL_CreateTextureFromSurface(painter, canvas);
-
             renderTime = std::chrono::high_resolution_clock::now() - renderStart;
             SamplesPerPixel = SamplesPerPixelTmp;
         } else {
@@ -132,21 +116,20 @@ int main()
         }
         ImGui::End();
 
-        ImGui::Begin("balls", nullptr, ImGuiWindowFlags_NoResize); {
-            std::ranges::for_each(
-                std::views::zip(std::views::iota(0),
-                                std::views::drop(world.objects, 1)),
-                [](auto io) { std::apply(showObjectControls, io); });
+        ImGui::Begin("balls", nullptr, ImGuiWindowFlags_NoResize);
+        std::ranges::for_each(
+            std::views::zip(std::views::iota(0), std::views::drop(world.objects, 1)),
+            [](auto io) { std::apply(showObjectControls, io); });
 
-            if (ImGui::Button("add")) {
-                addRandomObject();
-                initiateRender(canvas);
-            }
-            if (ImGui::Button("del")) {
-                world.objects.pop_back();
-                initiateRender(canvas);
-            }
-        } ImGui::End();
+        if (ImGui::Button("add")) {
+            addRandomObject();
+            initiateRender(canvas);
+        }
+        if (ImGui::Button("del")) {
+            world.objects.pop_back();
+            initiateRender(canvas);
+        }
+        ImGui::End();
 
         ImGui::Render();
         SDL_RenderClear(painter);
@@ -185,21 +168,23 @@ color ray_color(const ray& r, int depth)
 
 void initiateRender(SDL_Surface *canvas)
 {
-    renderStart = std::chrono::high_resolution_clock::now();
+    if (renderer)
+        renderer.stop();
+
     renderTime = std::chrono::duration<double>::zero();
 
-    auto func = [format = canvas->format](auto x, auto y, auto pbuf) {
+    auto func = [format = canvas->format](auto x, auto y) {
         auto col = std::ranges::fold_left(std::views::iota(0, SamplesPerPixel), color(),
             [y, x](color c, int i) { return c + ray_color(Camera.getRay(x, y, true)); });
 
         col = col / SamplesPerPixel * 255;
-        pbuf[y * Width + x] = SDL_MapRGBA(format, col.x(), col.y(), col.z(), 255);
+        return SDL_MapRGB(format, col.x(), col.y(), col.z());
     };
 
     Camera.recalculate();
-    threads = std::clamp(threads, 1, Renderer::MaxThreads);
-    renderer.reset(new Renderer(threads, func, Width, Height,
-        (uint32_t *)canvas->pixels));
+    renderer.setBuffer((uint32_t *)canvas->pixels, Width, Height);
+    renderStart = std::chrono::high_resolution_clock::now();
+    renderer.start(func, threads);
 }
 
 void showObjectControls(int index, std::unique_ptr<Object>& o)
@@ -209,9 +194,9 @@ void showObjectControls(int index, std::unique_ptr<Object>& o)
     ImGui::SetNextItemWidth(200);
     ImGui::Combo((std::string("mat") + idx).c_str(),
         reinterpret_cast<int *>(&o->M), "Lambertian\0Metal\0Dielectric\0");
-    //ImGui::SameLine(); ImGui::SetNextItemWidth(100);
-    //ImGui::InputDouble((std::string("radius") + idx).c_str(),
-    //    &o->radius, 0.1, 0.05, "%.2lf");
+    ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+    ImGui::InputDouble((std::string("radius") + idx).c_str(),
+        &dynamic_cast<Sphere *>(o.get())->radius, 0.1, 0.05, "%.2lf");
     ImGui::SetNextItemWidth(100);
     ImGui::InputDouble((std::string("x") + idx).c_str(),
         &o->center.x(), 0.05, 0.05, "%.2lf");
@@ -221,6 +206,28 @@ void showObjectControls(int index, std::unique_ptr<Object>& o)
     ImGui::SameLine(); ImGui::SetNextItemWidth(100);
     ImGui::InputDouble((std::string("z") + idx).c_str(),
         &o->center.z(), 0.1, 0.05, "%.2lf");
+}
+
+void showCameraControls(SDL_Surface *canvas)
+{
+    ImGui::SetNextItemWidth(100);
+    if (ImGui::InputDouble("X", &Camera.camera.x(), 0.1, 0.05, "%.2lf"))
+        preview(canvas);
+    ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+    if (ImGui::InputDouble("Y", &Camera.camera.y(), 0.1, 0.05, "%.2lf"))
+        preview(canvas);
+    ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+    if (ImGui::InputDouble("Z", &Camera.camera.z(), 0.1, 0.05, "%.2lf"))
+        preview(canvas);
+    ImGui::SetNextItemWidth(100);
+    if (ImGui::InputDouble("I", &Camera.lookat.x(), 0.1, 0.05, "%.2lf"))
+        preview(canvas);
+    ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+    if (ImGui::InputDouble("J", &Camera.lookat.y(), 0.1, 0.05, "%.2lf"))
+        preview(canvas);
+    ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+    if (ImGui::InputDouble("K", &Camera.lookat.z(), 0.1, 0.05, "%.2lf"))
+        preview(canvas);
 }
 
 void addRandomObject()
@@ -236,5 +243,14 @@ void preview(SDL_Surface *canvas)
     if (SamplesPerPixel != 1)
         SamplesPerPixelTmp = std::exchange(SamplesPerPixel, 1);
     initiateRender(canvas);
+}
+
+void exportScreenshot(SDL_Surface *canvas)
+{
+    std::string filename ("screenshot_");
+    filename += std::to_string(int(randomN() * 1000000));
+    filename += ".png";
+    IMG_SavePNG(canvas, filename.c_str());
+    std::cout << "saved " << filename << std::endl;
 }
 

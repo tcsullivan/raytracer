@@ -3,48 +3,28 @@
 
 #include <algorithm>
 #include <atomic>
-#include <memory>
 #include <ranges>
-#include <semaphore>
 #include <thread>
 
 class Renderer
 {
 public:
-    static constexpr int MaxThreads = 64;
-
-private:
-    int N;
-    std::counting_semaphore<MaxThreads> Workers;
-    std::atomic_uint processed;
-    unsigned total;
-    std::atomic_bool Stop;
-    std::unique_ptr<std::thread> primary;
-
-public:
-    Renderer(int n, auto func, unsigned width, unsigned height, auto pbuf):
-        N(n), Workers(N), processed(0), total(N * 8)
-    {
+    template<typename Fn>
+    void start(Fn func, int tn) {
+        actives.store(tn);
+        processed.store(0);
         Stop.store(false);
 
-        auto threads = std::views::transform(
-            std::views::chunk(
-                std::views::cartesian_product(
-                    std::views::iota(0u, width),
-                    std::views::iota(0u, height),
-                    std::views::single(pbuf)),
-                width * height / total),
-            [=, this](auto chunk) { return std::thread([=, this] { worker(func, chunk); }); });
+        if (primary.joinable())
+            primary.join();
 
-        primary.reset(new std::thread([=, this] {
-            for (auto th : threads) {
-                Workers.acquire();
-                th.detach();
-            }
-            for (int i : std::views::iota(0, N))
-                Workers.acquire();
-            Stop.store(true);
-        }));
+        primary = std::thread(&Renderer::dispatchWorkers<Fn>, this, func);
+    }
+
+    void setBuffer(std::uint32_t *pixelbuf, unsigned w, unsigned h) {
+        pixelBuffer = pixelbuf;
+        width = w;
+        height = h;
     }
 
     ~Renderer() {
@@ -61,20 +41,51 @@ public:
 
     void stop() {
         Stop.store(true);
-        if (primary->joinable())
-            primary->join();
+        if (primary.joinable())
+            primary.join();
     }
 
 private:
-    void worker(auto func, auto chunk) {
-        for (auto xyb : chunk) {
-            if (Stop.load())
-                break;
-            std::apply(func, xyb);
+    std::uint32_t *pixelBuffer = nullptr;
+    unsigned width = 0, height = 0, total = 0;
+    std::thread primary;
+    std::atomic_uint actives;
+    std::atomic_uint processed;
+    std::atomic_bool Stop;
+
+    template<typename Fn>
+    void dispatchWorkers(Fn func) {
+        const auto N = actives.load();
+        total = N * 16;
+        auto threads = std::views::transform(
+            std::views::chunk(
+                std::views::cartesian_product(
+                    std::views::iota(0u, width),
+                    std::views::iota(0u, height)),
+                width * height / total),
+            [=, this](auto chunk) { return std::thread([=, this] { worker(func, chunk); }); });
+
+        for (auto th : threads) {
+            while (actives.load() == 0)
+                std::this_thread::yield();
+            --actives;
+            th.detach();
         }
 
-        processed++;
-        Workers.release();
+        while (actives.load() < N)
+            std::this_thread::yield();
+        Stop.store(true);
+    }
+
+    void worker(auto func, auto chunk) {
+        for (auto [x, y] : chunk) {
+            if (Stop.load())
+                break;
+            pixelBuffer[y * width + x] = func(x, y);
+        }
+
+        ++processed;
+        ++actives;
     }
 };
 
